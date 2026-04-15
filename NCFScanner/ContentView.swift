@@ -13,7 +13,7 @@ struct ContentView: View {
                     // Header
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("NCF Scanner")
+                            Text("NCF Scanner v0.8")
                                 .font(.largeTitle)
                                 .fontWeight(.bold)
                                 .foregroundColor(.white)
