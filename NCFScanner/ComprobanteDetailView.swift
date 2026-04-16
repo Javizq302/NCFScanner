@@ -26,6 +26,14 @@ struct ComprobanteDetailView: View {
                     Spacer()
                     // Balance visual
                     Color.clear.frame(width: 44, height: 44)
+                    Button(action: {dismiss ()}) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 16)

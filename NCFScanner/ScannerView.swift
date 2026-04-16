@@ -53,12 +53,12 @@ struct ScannerView: View {
                 // Marco de escaneo
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(Color.white, lineWidth: 2)
-                    .frame(width: 260, height: 380)
+                    .frame(width: 260, height: 420)
                     .overlay(
-                        Text("Apunta al comprobante")
+                        Text("Apunta la Factura")
                             .font(.system(size: 13))
                             .foregroundColor(.white.opacity(0.7))
-                            .padding(.top, 420)
+                            .padding(.top, 440)
                     )
                 
                 Spacer()
@@ -432,91 +432,182 @@ struct ScannedResultView: View {
     let data: ScannedData
     let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var ncf: String
     @State private var establecimiento: String
     @State private var monto: String
     @State private var fecha: String
-    
+    @State private var isEditingNCF = false
+    @FocusState private var ncfFieldFocused: Bool
+
     init(data: ScannedData, onSave: @escaping () -> Void) {
         self.data = data
         self.onSave = onSave
+        _ncf = State(initialValue: data.ncf)
         _establecimiento = State(initialValue: data.empresa)
         _monto = State(initialValue: data.total)
         _fecha = State(initialValue: data.fecha)
     }
-    
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            
-            VStack(spacing: 32) {
+
+            VStack(spacing: 0) {
+                // Drag indicator
                 RoundedRectangle(cornerRadius: 3)
                     .fill(Color.white.opacity(0.3))
                     .frame(width: 40, height: 4)
-                    .padding(.top, 16)
-                
-                VStack(spacing: 8) {
-                    Text("NCF Detectado")
-                        .font(.system(size: 13))
-                        .foregroundColor(.gray)
-                    Text(data.ncf)
-                        .font(.system(size: 22, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                }
-                
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Establecimiento")
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        TextField("Ej: La Sirena", text: $establecimiento)
-                            .font(.system(size: 15))
-                            .foregroundColor(.white)
-                            .padding(14)
-                            .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Monto (RD$)")
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        TextField("0.00", text: $monto)
-                            .font(.system(size: 15))
-                            .foregroundColor(.white)
-                            .keyboardType(.decimalPad)
-                            .padding(14)
-                            .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Fecha de emisión")
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        TextField("dd/mm/yyyy", text: $fecha)
-                            .font(.system(size: 15))
-                            .foregroundColor(.white)
-                            .padding(14)
-                            .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                }
-                .padding(.horizontal, 24)
-                
-                Button(action: { onSave() }) {
-                    Text("Guardar Comprobante")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.black)
+                    .padding(.top, 12)
+                    .padding(.bottom, 24)
+
+                ScrollView {
+                    VStack(spacing: 24) {
+
+                        // MARK: - NCF Hero Card
+                        VStack(spacing: 16) {
+                            // Status icon
+                            ZStack {
+                                Circle()
+                                    .fill(Color.white.opacity(0.08))
+                                    .frame(width: 56, height: 56)
+                                Image(systemName: ncf == "No detectado" ? "exclamationmark.triangle" : "checkmark")
+                                    .font(.system(size: 24, weight: .semibold))
+                                    .foregroundColor(ncf == "No detectado" ? .gray : .white)
+                            }
+
+                            Text(ncf == "No detectado" ? "NCF No Detectado" : "NCF Detectado")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.gray)
+                                .textCase(.uppercase)
+                                .tracking(1.2)
+
+                            // Editable NCF
+                            HStack(spacing: 8) {
+                                TextField("B0100000000", text: $ncf)
+                                    .font(.system(size: 24, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.white)
+                                    .multilineTextAlignment(.center)
+                                    .autocorrectionDisabled()
+                                    .textInputAutocapitalization(.characters)
+                                    .focused($ncfFieldFocused)
+
+                                Button(action: {
+                                    ncfFieldFocused = true
+                                }) {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.gray)
+                                        .padding(8)
+                                        .background(Color.white.opacity(0.08))
+                                        .clipShape(Circle())
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        }
+                        .padding(.vertical, 24)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 24)
+
+                        // MARK: - Detail Fields Card
+                        VStack(spacing: 0) {
+                            // Establecimiento
+                            EditableFieldRow(
+                                label: "Establecimiento",
+                                icon: "building.2",
+                                placeholder: "Ej: La Sirena",
+                                text: $establecimiento
+                            )
+
+                            Divider().background(Color.white.opacity(0.06))
+
+                            // Monto
+                            EditableFieldRow(
+                                label: "Monto (RD$)",
+                                icon: "dollarsign",
+                                placeholder: "0.00",
+                                text: $monto,
+                                keyboard: .decimalPad
+                            )
+
+                            Divider().background(Color.white.opacity(0.06))
+
+                            // Fecha
+                            EditableFieldRow(
+                                label: "Fecha de emisión",
+                                icon: "calendar",
+                                placeholder: "dd/mm/yyyy",
+                                text: $fecha
+                            )
+                        }
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 24)
+
+                        // MARK: - Actions
+                        VStack(spacing: 12) {
+                            Button(action: { onSave() }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "square.and.arrow.down")
+                                        .font(.system(size: 15, weight: .semibold))
+                                    Text("Guardar Comprobante")
+                                        .font(.system(size: 16, weight: .semibold))
+                                }
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(Color.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+
+                            Button(action: { dismiss() }) {
+                                Text("Descartar")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.gray)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                            }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                    }
+                    .padding(.bottom, 32)
                 }
-                .padding(.horizontal, 24)
-                
-                Spacer()
             }
         }
+    }
+}
+
+// MARK: - Editable Field Row
+struct EditableFieldRow: View {
+    let label: String
+    let icon: String
+    let placeholder: String
+    @Binding var text: String
+    var keyboard: UIKeyboardType = .default
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundColor(.gray)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.gray)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                TextField(placeholder, text: $text)
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
+                    .keyboardType(keyboard)
+                    .autocorrectionDisabled()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
     }
 }
