@@ -60,7 +60,7 @@ struct ContentView: View {
                                 }
 
                                 // Version badge
-                                Text("DEV v0.3.1")
+                                Text("DEV v0.3.4")
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                     .foregroundColor(.gray)
                                     .tracking(0.5)
@@ -193,7 +193,7 @@ struct ComprobanteCard: View {
 
             // Amount & date
             VStack(alignment: .trailing, spacing: 3) {
-                Text("RD$ \(comprobante.monto, specifier: "%.2f")")
+                Text("RD$ \(comprobante.total, specifier: "%.2f")")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white)
                 Text(comprobante.fecha)
@@ -214,16 +214,20 @@ struct ComprobanteCard: View {
 // MARK: - Model (temporal, mock data)
 struct Comprobante: Identifiable {
     let id = UUID()
+    let rnc: String
     let ncf: String
     let establecimiento: String
-    let monto: Double
     let fecha: String
+    let subtotal: Double
+    let itbis: Double
+    let total: Double
+    let metodoPago: String
 }
 
 let mockComprobantes = [
-    Comprobante(ncf: "B0100000001", establecimiento: "La Sirena", monto: 1850.00, fecha: "11 abr 2026"),
-    Comprobante(ncf: "B0100000002", establecimiento: "Supermercado Nacional", monto: 3200.50, fecha: "10 May 2026"),
-    Comprobante(ncf: "E310000000001", establecimiento: "Farmacia Carol", monto: 650.00, fecha: "9 Jun 2026"),
+    Comprobante(rnc: "101-12345-1", ncf: "B0100000001", establecimiento: "La Sirena", fecha: "11 abr 2026", subtotal: 1567.80, itbis: 282.20, total: 1850.00, metodoPago: "Tarjeta"),
+    Comprobante(rnc: "130-98765-3", ncf: "B0100000002", establecimiento: "Supermercado Nacional", fecha: "10 May 2026", subtotal: 2712.29, itbis: 488.21, total: 3200.50, metodoPago: "Efectivo"),
+    Comprobante(rnc: "401-55555-2", ncf: "E310000000001", establecimiento: "Farmacia Carol", fecha: "9 Jun 2026", subtotal: 550.85, itbis: 99.15, total: 650.00, metodoPago: "Transferencia"),
 ]
 
 #Preview {

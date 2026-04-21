@@ -2,11 +2,37 @@ import SwiftUI
 import AVFoundation
 import Vision
 
+private extension CGImagePropertyOrientation {
+    init(_ uiOrientation: UIImage.Orientation) {
+        switch uiOrientation {
+        case .up: self = .up
+        case .upMirrored: self = .upMirrored
+        case .down: self = .down
+        case .downMirrored: self = .downMirrored
+        case .left: self = .left
+        case .leftMirrored: self = .leftMirrored
+        case .right: self = .right
+        case .rightMirrored: self = .rightMirrored
+        @unknown default: self = .up
+        }
+    }
+}
+
 struct ScannedData {
+    var rnc: String
     var ncf: String
     var empresa: String
     var fecha: String
+    var subtotal: String
+    var itbis: String
     var total: String
+    var metodoPago: String
+}
+
+// Línea de OCR con su posición en la imagen (coords Vision normalizadas, origen abajo-izquierda)
+struct OCRLine {
+    let text: String
+    let box: CGRect
 }
 
 struct ScannerView: View {
@@ -117,25 +143,38 @@ struct ScannerView: View {
                 return
             }
             
-            let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+            let ocrLines: [OCRLine] = observations.compactMap { obs in
+                guard let text = obs.topCandidates(1).first?.string else { return nil }
+                return OCRLine(text: text, box: obs.boundingBox)
+            }
+            let lines = ocrLines.map { $0.text }
             print("=== LÍNEAS RECONOCIDAS ===")
-            lines.enumerated().forEach { print("\($0.offset): \($0.element)") }
+            ocrLines.enumerated().forEach { i, l in
+                print("\(i): [y=\(String(format: "%.3f", l.box.midY))] \(l.text)")
+            }
             let fullText = lines.joined(separator: " ")
-            
-            print("Texto reconocido: \(fullText)")
-            print("Líneas: \(lines)")
-            
+
+            let rnc = extractRNC(from: fullText) ?? "No detectado"
             let ncf = extractNCF(from: fullText) ?? "No detectado"
             let fecha = extractFecha(from: fullText) ?? "No detectada"
-            let total = extractTotal(from: fullText) ?? "0.00"
+            let subtotalResult = extractSubtotal(from: ocrLines)
+            let subtotal = subtotalResult?.amount ?? "0.00"
+            let excludedBoxes: [CGRect] = subtotalResult.map { [$0.usedBox] } ?? []
+            let itbis = extractITBIS(from: ocrLines, excludingBoxes: excludedBoxes) ?? "0.00"
+            let total = extractTotal(from: ocrLines) ?? "0.00"
             let empresa = extractEmpresa(from: lines) ?? "No detectada"
-            
+            let metodoPago = extractMetodoPago(from: fullText) ?? "No detectado"
+
             DispatchQueue.main.async {
                 scannedResult = ScannedData(
+                    rnc: rnc,
                     ncf: ncf,
                     empresa: empresa,
                     fecha: fecha,
-                    total: total
+                    subtotal: subtotal,
+                    itbis: itbis,
+                    total: total,
+                    metodoPago: metodoPago
                 )
                 showResult = true
             }
@@ -145,7 +184,8 @@ struct ScannerView: View {
         request.recognitionLanguages = ["es-DO", "es", "en"]
         request.usesLanguageCorrection = false
         
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let orientation = CGImagePropertyOrientation(image.imageOrientation)
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try handler.perform([request])
@@ -197,8 +237,6 @@ struct ScannerView: View {
     }
 
     private func extractFecha(from text: String) -> String? {
-        let lines = text.components(separatedBy: " ")
-        
         // Primero intentamos encontrar fecha cerca de palabras clave
         let keywords = ["fecha", "emisión", "emision", "emitido", "date", "fec"]
         let fullLower = text.lowercased()
@@ -246,53 +284,79 @@ struct ScannerView: View {
         return allDates.last
     }
 
-    private func extractTotal(from text: String) -> String? {
-        let fullLower = text.lowercased()
-        
-        // Primero buscamos cerca de palabras clave de total
-        // Ignoramos subtotal, itbis, impuesto, descuento
-        let keywords = ["total", "monto total", "importe total", "gran total", "total a pagar"]
-        let ignoreKeywords = ["subtotal", "sub-total", "sub total", "itbis", "impuesto", "descuento", "propina"]
-        
-        let lines = text.components(separatedBy: CharacterSet.newlines)
-        let spaceLines = text.components(separatedBy: " ")
-        
-        // Buscamos línea por línea
+    // MARK: - Amount helpers
+    // Monto con 2 decimales obligatorios — soporta miles con coma: 1,262.72 / 227.29 / 1490.01
+    private static let amountRegex: NSRegularExpression = {
+        try! NSRegularExpression(pattern: #"(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d)"#)
+    }()
+
+    private func firstAmount(in text: String) -> String? {
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = Self.amountRegex.firstMatch(in: text, range: range),
+              let r = Range(match.range, in: text) else { return nil }
+        return String(text[r])
+    }
+
+    private func parseAmount(_ s: String) -> Double? {
+        Double(s.replacingOccurrences(of: ",", with: ""))
+    }
+
+    // Busca el monto pareado con la línea-label, eligiendo el monto con Y
+    // más cercano al label (siempre que esté a la derecha). Ignora observaciones
+    // excluidas (usadas para evitar que ITBIS devuelva el mismo monto que el subtotal).
+    private func amountOnSameRow(
+        as labelBox: CGRect,
+        in lines: [OCRLine],
+        excludingBoxes excluded: [CGRect] = []
+    ) -> String? {
+        // 1) Si el label ya trae un monto en su propio texto, usarlo.
+        if let labelLine = lines.first(where: { $0.box == labelBox }),
+           let amt = firstAmount(in: labelLine.text) {
+            return amt
+        }
+
+        // 2) Entre todos los montos a la derecha del label, elegir el de Y más cercano.
+        let maxYDist: CGFloat = 0.03
+        let best = lines.compactMap { line -> (OCRLine, String, CGFloat)? in
+            guard line.box != labelBox,
+                  !excluded.contains(line.box),
+                  line.box.minX > labelBox.minX,
+                  let amt = firstAmount(in: line.text) else { return nil }
+            return (line, amt, abs(line.box.midY - labelBox.midY))
+        }
+        .filter { $0.2 < maxYDist }
+        .min { $0.2 < $1.2 }
+
+        return best?.1
+    }
+
+    private func extractTotal(from lines: [OCRLine]) -> String? {
+        let keywords = ["total"]
+        // "total en dolar"/USD es monto alterno en dólares — ignorar
+        let exclude = ["subtotal", "sub-total", "sub total", "en dolar", "en dólar", "dolar", "dólar", "usd"]
+
+        var candidates: [Double] = []
         for line in lines {
-            let lineLower = line.lowercased()
-            
-            // Ignoramos líneas con subtotal, itbis, etc.
-            let shouldIgnore = ignoreKeywords.contains { lineLower.contains($0) }
-            guard !shouldIgnore else { continue }
-            
-            // Buscamos líneas que contengan "total"
-            let hasKeyword = keywords.contains { lineLower.contains($0) }
-            guard hasKeyword else { continue }
-            
-            // Extraemos el número de esa línea
-            let amountPattern = "[\\d,\\.]+(?:\\.\\d{2})"
-            if let regex = try? NSRegularExpression(pattern: amountPattern),
-               let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-               let matchRange = Range(match.range, in: line) {
-                return String(line[matchRange])
+            let lower = line.text.lowercased()
+            guard keywords.contains(where: { lower.contains($0) }) else { continue }
+            guard !exclude.contains(where: { lower.contains($0) }) else { continue }
+            if let amt = amountOnSameRow(as: line.box, in: lines),
+               let val = parseAmount(amt) {
+                candidates.append(val)
             }
         }
-        
-        // Fallback — buscar el número más grande del texto
-        // (el total suele ser el monto más alto en la factura)
-        let amountPattern = "[\\d,\\.]+(?:\\.\\d{2})"
-        if let regex = try? NSRegularExpression(pattern: amountPattern) {
-            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            let amounts = matches.compactMap { match -> Double? in
-                guard let range = Range(match.range, in: text) else { return nil }
-                let str = String(text[range]).replacingOccurrences(of: ",", with: "")
-                return Double(str)
-            }
-            if let maxAmount = amounts.max() {
-                return String(format: "%.2f", maxAmount)
-            }
+        // Entre matches de "total", el grand total es el más alto
+        if let max = candidates.max() {
+            return String(format: "%.2f", max)
         }
-        
+
+        // Fallback — monto más alto de toda la factura
+        let allAmounts: [Double] = lines.compactMap { line in
+            firstAmount(in: line.text).flatMap(parseAmount)
+        }
+        if let max = allAmounts.max() {
+            return String(format: "%.2f", max)
+        }
         return nil
     }
 
@@ -347,6 +411,107 @@ struct ScannerView: View {
         
         // Si no hay indicador, tomamos la primera línea limpia
         return cleanLines.first?.trimmingCharacters(in: .whitespaces)
+    }
+
+    // MARK: - RNC Extractor
+    private func extractRNC(from text: String) -> String? {
+        // RNC en DR: 9 dígitos, a veces con guiones (e.g. 101-12345-1)
+        let patterns = [
+            "(?:RNC|R\\.N\\.C\\.?)\\s*:?\\s*(\\d{3}-?\\d{5}-?\\d{1})",
+            "(?:RNC|R\\.N\\.C\\.?)\\s*:?\\s*(\\d{9})",
+            "\\b(\\d{3}-\\d{5}-\\d{1})\\b"
+        ]
+
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let range = NSRange(text.startIndex..., in: text)
+                if let match = regex.firstMatch(in: text, range: range) {
+                    // Capturamos el grupo 1 si existe, sino el match completo
+                    let captureRange = match.numberOfRanges > 1 ? match.range(at: 1) : match.range
+                    if let resultRange = Range(captureRange, in: text) {
+                        return String(text[resultRange])
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    // Busca el label y devuelve (monto, box-del-monto-usado) para que el caller
+    // pueda excluir esa observación de extracciones subsiguientes.
+    private func extractAmount(
+        matching keywords: [String],
+        excludingKeywords excludeKw: [String] = [],
+        from lines: [OCRLine],
+        excludingBoxes excluded: [CGRect] = []
+    ) -> (amount: String, usedBox: CGRect)? {
+        for line in lines {
+            let lower = line.text.lowercased()
+            guard keywords.contains(where: { lower.contains($0) }) else { continue }
+            guard !excludeKw.contains(where: { lower.contains($0) }) else { continue }
+
+            // Si el label trae el monto en el mismo texto, devolvemos su propia box.
+            if let amt = firstAmount(in: line.text) {
+                return (amt, line.box)
+            }
+            // Sino, buscamos el monto Y-más-cercano a la derecha.
+            if let amt = amountOnSameRow(as: line.box, in: lines, excludingBoxes: excluded) {
+                // Devolvemos la box del monto detectado (para excluirlo más adelante).
+                if let amountLine = lines.first(where: { $0.box.minX > line.box.minX
+                    && firstAmount(in: $0.text) == amt
+                    && !excluded.contains($0.box) }) {
+                    return (amt, amountLine.box)
+                }
+                return (amt, line.box)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Subtotal Extractor
+    private func extractSubtotal(from lines: [OCRLine]) -> (amount: String, usedBox: CGRect)? {
+        let keywords = ["subtotal", "sub-total", "sub total", "monto sin itbis", "base imponible"]
+        return extractAmount(matching: keywords, from: lines)
+    }
+
+    // MARK: - ITBIS Extractor
+    private func extractITBIS(
+        from lines: [OCRLine],
+        excludingBoxes excluded: [CGRect] = []
+    ) -> String? {
+        let keywords = ["itbis", "i.t.b.i.s", "impuesto"]
+        // "sin itbis" aparece en labels de subtotal — no es el ITBIS facturado
+        let excludeKw = ["sin itbis"]
+        return extractAmount(
+            matching: keywords,
+            excludingKeywords: excludeKw,
+            from: lines,
+            excludingBoxes: excluded
+        )?.amount
+    }
+
+    // MARK: - Método de Pago Extractor
+    private func extractMetodoPago(from text: String) -> String? {
+        let upper = text.uppercased()
+
+        let tarjetaKeywords = ["TARJETA", "VISA", "MASTERCARD", "MASTER CARD",
+                               "AMEX", "AMERICAN EXPRESS", "DÉBITO", "DEBITO",
+                               "CREDITO", "CRÉDITO", "T. CREDITO", "T. DEBITO",
+                               "DATAPHONE", "POS", "TERMINAL"]
+        let efectivoKeywords = ["EFECTIVO", "CASH", "CONTADO", "EN EFECTIVO"]
+        let transferenciaKeywords = ["TRANSFERENCIA", "TRANSFER", "BANRESERVAS",
+                                     "BHD", "POPULAR", "SCOTIABANK"]
+
+        for keyword in tarjetaKeywords {
+            if upper.contains(keyword) { return "Tarjeta" }
+        }
+        for keyword in efectivoKeywords {
+            if upper.contains(keyword) { return "Efectivo" }
+        }
+        for keyword in transferenciaKeywords {
+            if upper.contains(keyword) { return "Transferencia" }
+        }
+        return nil
     }
 }
 
@@ -432,20 +597,27 @@ struct ScannedResultView: View {
     let data: ScannedData
     let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var rnc: String
     @State private var ncf: String
     @State private var establecimiento: String
-    @State private var monto: String
     @State private var fecha: String
-    @State private var isEditingNCF = false
+    @State private var subtotal: String
+    @State private var itbis: String
+    @State private var total: String
+    @State private var metodoPago: String
     @FocusState private var ncfFieldFocused: Bool
 
     init(data: ScannedData, onSave: @escaping () -> Void) {
         self.data = data
         self.onSave = onSave
+        _rnc = State(initialValue: data.rnc)
         _ncf = State(initialValue: data.ncf)
         _establecimiento = State(initialValue: data.empresa)
-        _monto = State(initialValue: data.total)
         _fecha = State(initialValue: data.fecha)
+        _subtotal = State(initialValue: data.subtotal)
+        _itbis = State(initialValue: data.itbis)
+        _total = State(initialValue: data.total)
+        _metodoPago = State(initialValue: data.metodoPago)
     }
 
     var body: some View {
@@ -510,9 +682,18 @@ struct ScannedResultView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .padding(.horizontal, 24)
 
-                        // MARK: - Detail Fields Card
+                        // MARK: - Info Card
                         VStack(spacing: 0) {
-                            // Establecimiento
+                            EditableFieldRow(
+                                label: "RNC",
+                                icon: "number",
+                                placeholder: "000-00000-0",
+                                text: $rnc,
+                                keyboard: .numberPad
+                            )
+
+                            Divider().background(Color.white.opacity(0.06))
+
                             EditableFieldRow(
                                 label: "Establecimiento",
                                 icon: "building.2",
@@ -522,24 +703,90 @@ struct ScannedResultView: View {
 
                             Divider().background(Color.white.opacity(0.06))
 
-                            // Monto
                             EditableFieldRow(
-                                label: "Monto (RD$)",
-                                icon: "dollarsign",
+                                label: "Fecha de compra",
+                                icon: "calendar",
+                                placeholder: "dd/mm/yyyy",
+                                text: $fecha
+                            )
+                        }
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 24)
+
+                        // MARK: - Montos Card
+                        VStack(spacing: 0) {
+                            EditableFieldRow(
+                                label: "Subtotal (sin ITBIS)",
+                                icon: "minus.circle",
                                 placeholder: "0.00",
-                                text: $monto,
+                                text: $subtotal,
                                 keyboard: .decimalPad
                             )
 
                             Divider().background(Color.white.opacity(0.06))
 
-                            // Fecha
                             EditableFieldRow(
-                                label: "Fecha de emisión",
-                                icon: "calendar",
-                                placeholder: "dd/mm/yyyy",
-                                text: $fecha
+                                label: "ITBIS facturado",
+                                icon: "percent",
+                                placeholder: "0.00",
+                                text: $itbis,
+                                keyboard: .decimalPad
                             )
+
+                            Divider().background(Color.white.opacity(0.06))
+
+                            EditableFieldRow(
+                                label: "Total",
+                                icon: "dollarsign",
+                                placeholder: "0.00",
+                                text: $total,
+                                keyboard: .decimalPad
+                            )
+                        }
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 24)
+
+                        // MARK: - Método de Pago
+                        VStack(spacing: 0) {
+                            HStack(spacing: 14) {
+                                Image(systemName: "creditcard")
+                                    .font(.system(size: 15))
+                                    .foregroundColor(.gray)
+                                    .frame(width: 20)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("MÉTODO DE PAGO")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(.gray)
+                                        .tracking(0.5)
+
+                                    HStack(spacing: 8) {
+                                        ForEach(["Efectivo", "Tarjeta", "Transferencia"], id: \.self) { metodo in
+                                            Button(action: {
+                                                withAnimation(.easeInOut(duration: 0.15)) {
+                                                    metodoPago = metodo
+                                                }
+                                            }) {
+                                                Text(metodo)
+                                                    .font(.system(size: 12, weight: .medium))
+                                                    .foregroundColor(metodoPago == metodo ? .black : .gray)
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 7)
+                                                    .background(
+                                                        metodoPago == metodo
+                                                            ? Color.white
+                                                            : Color.white.opacity(0.06)
+                                                    )
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
                         }
                         .background(Color.white.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 16))

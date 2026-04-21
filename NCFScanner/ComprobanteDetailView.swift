@@ -3,11 +3,11 @@ import SwiftUI
 struct ComprobanteDetailView: View {
     let comprobante: Comprobante
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -24,48 +24,60 @@ struct ComprobanteDetailView: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(.white)
                     Spacer()
-                    // Balance visual
                     Color.clear.frame(width: 44, height: 44)
-                    Button(action: {dismiss ()}) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color.white.opacity(0.1))
-                            .clipShape(Circle())
-                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
-                
+
                 ScrollView {
                     VStack(spacing: 24) {
                         // Monto principal
                         VStack(spacing: 8) {
-                            Text("RD$ \(comprobante.monto, specifier: "%.2f")")
+                            Text("RD$ \(comprobante.total, specifier: "%.2f")")
                                 .font(.system(size: 42, weight: .bold))
                                 .foregroundColor(.white)
                             Text(comprobante.establecimiento)
                                 .font(.system(size: 16))
                                 .foregroundColor(.gray)
+
+                            // Método de pago badge
+                            Text(comprobante.metodoPago)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.gray)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Capsule())
                         }
                         .padding(.top, 32)
                         .padding(.bottom, 8)
-                        
-                        // NCF Card
+
+                        // Info Card
                         VStack(spacing: 0) {
+                            InfoRow(label: "RNC", value: comprobante.rnc, isMonospaced: true)
+                            Divider().background(Color.white.opacity(0.08))
                             InfoRow(label: "NCF", value: comprobante.ncf, isMonospaced: true)
                             Divider().background(Color.white.opacity(0.08))
                             InfoRow(label: "Establecimiento", value: comprobante.establecimiento)
-                            Divider().background(Color.white.opacity(0.08))
-                            InfoRow(label: "Monto", value: "RD$ \(String(format: "%.2f", comprobante.monto))")
                             Divider().background(Color.white.opacity(0.08))
                             InfoRow(label: "Fecha", value: comprobante.fecha)
                         }
                         .background(Color.white.opacity(0.05))
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                         .padding(.horizontal, 24)
-                        
+
+                        // Montos Card
+                        VStack(spacing: 0) {
+                            InfoRow(label: "Subtotal", value: "RD$ \(String(format: "%.2f", comprobante.subtotal))")
+                            Divider().background(Color.white.opacity(0.08))
+                            InfoRow(label: "ITBIS", value: "RD$ \(String(format: "%.2f", comprobante.itbis))")
+                            Divider().background(Color.white.opacity(0.08))
+                            InfoRow(label: "Total", value: "RD$ \(String(format: "%.2f", comprobante.total))")
+                        }
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .padding(.horizontal, 24)
+
                         // Botón copiar NCF
                         Button(action: {
                             UIPasteboard.general.string = comprobante.ncf
@@ -83,6 +95,7 @@ struct ComprobanteDetailView: View {
                         }
                         .padding(.horizontal, 24)
                     }
+                    .padding(.bottom, 32)
                 }
             }
         }
@@ -95,7 +108,7 @@ struct InfoRow: View {
     let label: String
     let value: String
     var isMonospaced: Bool = false
-    
+
     var body: some View {
         HStack {
             Text(label)
@@ -116,6 +129,3 @@ struct InfoRow: View {
 #Preview {
     ComprobanteDetailView(comprobante: mockComprobantes[0])
 }
-//  Created by Angel Izquierdo on 11/4/26.
-//
-
